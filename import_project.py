@@ -3,27 +3,16 @@ import pdfplumber
 import re
 import json
 
-
 # ===========================================================
 # CONFIG
 # ===========================================================
 BASE_URL = "https://propertprodjango.onrender.com/api/dev/v1"
 ORGANIZATION_ID = 2
 SESSION = requests.Session()
-ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNDc1OTA2LCJpYXQiOjE3NjM0NjE1MDYsImp0aSI6ImM3OTMxYTFjMzgwZjQ0M2ZhYmEwNjJhNGFkZjNiNThiIiwidXNlcl9pZCI6MTJ9.yQtYrEWKvaFW6qIYZzBJDMBeIs9ppvdSUSmJhV5er2k"
 
-
-
-# ===========================================================
-# COOKIE LOADING (paste browser cookies)
-# ===========================================================
-def load_cookies_from_browser(cookie_string: str):
-    cookie_pairs = cookie_string.split(";")
-    for pair in cookie_pairs:
-        if "=" in pair:
-            name, value = pair.strip().split("=", 1)
-            SESSION.cookies.set(name, value)
-
+ACCESS_TOKEN = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNDk5MTEwLCJpYXQiOjE3NjM0ODQ3MTAsImp0aSI6IjY0ZWMzMjYyOGIyYTQ0MzY5OWJjZWUyMDBiZWVmYzY5IiwidXNlcl9pZCI6MTJ9.SIhIr-o4uQO-FIxLVoscwehaKav0uQWQyqVgm9QtZw4"
+)
 
 # ===========================================================
 # API HELPERS
@@ -33,7 +22,6 @@ def api_post(endpoint, data=None):
 
     headers = {
         "Accept": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
         "Content-Type": "application/json",
         "Authorization": f"Bearer {ACCESS_TOKEN}",
     }
@@ -44,7 +32,6 @@ def api_post(endpoint, data=None):
         print(f"[ERROR] POST {url} → {resp.status_code}: {resp.text}")
 
     return resp
-
 
 
 # ===========================================================
@@ -95,7 +82,7 @@ def create_unit(project_id, unit):
         "currency": "EUR",
         "vat_included": False,
         "status": unit["status"],
-        "floor": unit["floor"],
+        "floor": "",  # ALWAYS EMPTY
         "plot": unit["plot"],
         "plot_area": unit["plot_area"],
         "veranda": unit["veranda"],
@@ -113,7 +100,7 @@ def create_unit(project_id, unit):
 
 
 # ===========================================================
-# SAFE FLOAT
+# HELPERS
 # ===========================================================
 def safe_float(v):
     try:
@@ -124,40 +111,46 @@ def safe_float(v):
 
 
 # ===========================================================
-# PARSE A TABLE ROW INTO A UNIT
+# PARSE UNIT ROW
 # ===========================================================
-def parse_unit_row(row, project_name, block_prefix):
-    # Normalize row: convert None to ""
+def parse_unit_row(row, project_name):
     row = [(x or "").strip() for x in row]
 
-    # Skip invalid rows
     if len(row) < 2:
         return None
 
-    # Header row like ["Unit", ...]
-    if row[0].lower() == "unit":
+    unit_raw = row[0]
+
+    # --- Skip header rows ---
+    if unit_raw.lower() == "unit":
         return None
 
-    # First column must be the unit number
-    unit_number = row[0]
-    if not unit_number.isdigit():
-        return None
+    # =======================================================
+    # IDENTITY RULE: VILLA OR BLOCK UNIT?
+    # =======================================================
 
-    # Ensure row ALWAYS has 11 columns
-    # (Pad missing values)
+    if unit_raw.isdigit():
+        # Villa
+        code = f"Villa-{unit_raw}"
+        unit_type = "house"
+    else:
+        # Block-type unit (A101, M102, L003, A201 etc.)
+        code = re.sub(r"[^A-Za-z0-9]", "", unit_raw)  # Clean
+        unit_type = "apartment"
+
+    # Ensure proper row padding
     while len(row) < 11:
         row.append("")
 
-    # Extract columns safely
     bedrooms = safe_float(row[1])
     plot = safe_float(row[2])
     bathrooms = safe_float(row[3])
     internal = safe_float(row[4])
     veranda = safe_float(row[6])
     total_area = safe_float(row[8])
-    price_raw = row[10] if len(row) > 10 else ""
+    price_raw = row[10]
 
-    # Status logic
+    # Determine status
     status_text = price_raw.lower()
     if "sold" in status_text:
         status = "sold"
@@ -169,13 +162,10 @@ def parse_unit_row(row, project_name, block_prefix):
         status = "available"
         price = safe_float(price_raw)
 
-    # Build final unit code
-    code = f"{block_prefix}-{unit_number}"
-
     return {
         "project_name": project_name,
         "code": code,
-        "unit_type": "house",
+        "unit_type": unit_type,
         "bedrooms": int(bedrooms or 0),
         "bathrooms": int(bathrooms or 1),
         "area_internal": internal,
@@ -183,13 +173,11 @@ def parse_unit_row(row, project_name, block_prefix):
         "area_total": total_area,
         "price": price,
         "status": status,
-        "floor": block_prefix,
         "plot": "private" if plot else "none",
         "plot_area": plot,
         "veranda": "private" if veranda else "none",
         "veranda_area": veranda,
     }
-
 
 
 # ===========================================================
@@ -203,29 +191,28 @@ def parse_pdf(pdf_path):
         for page_number, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
 
-            # PROJECT detection based on first line
+            # PROJECT DETECTION
             first_line = text.split("\n")[0].strip()
             if len(first_line) > 3 and not re.search(r"[0-9]", first_line):
                 current_project = first_line
                 print(f"[PROJECT DETECTED] Page {page_number}: {current_project}")
-                if current_project not in all_units:
-                    all_units[current_project] = []
+                all_units.setdefault(current_project, [])
 
-            # Extract tables
-            tables = page.extract_tables()
-            if not tables:
-                continue
-
-            for table in tables:
-                # Expect villa-like table (first row is header of big table)
+            # EXTRACT TABLES
+            for table in page.extract_tables() or []:
                 if len(table) < 3:
                     continue
 
-                # Every row after header+subheader is a unit
+                # Parse real unit rows (skip header rows)
                 for row in table[2:]:
                     if not row or not row[0]:
                         continue
-                    unit = parse_unit_row(row, current_project, "Villa")
+
+                    # Remove "Penthouse" lines
+                    if "penthouse" in row[0].lower():
+                        continue
+
+                    unit = parse_unit_row(row, current_project)
                     if unit:
                         all_units[current_project].append(unit)
 
@@ -235,9 +222,7 @@ def parse_pdf(pdf_path):
 # ===========================================================
 # MAIN PROCESS
 # ===========================================================
-def import_pdf(pdf_path, cookie_string):
-    load_cookies_from_browser(cookie_string)
-
+def import_pdf(pdf_path):
     all_projects = parse_pdf(pdf_path)
 
     print("\n==============================")
@@ -250,7 +235,6 @@ def import_pdf(pdf_path, cookie_string):
 
         pid = create_project(project_name)
         if not pid:
-            print("Skipping this project.")
             continue
 
         for unit in units:
@@ -266,6 +250,4 @@ def import_pdf(pdf_path, cookie_string):
 # ===========================================================
 if __name__ == "__main__":
     pdf_file = "FullPricelist_B-1.pdf"
-    cookie_string = ""   # <<< paste from your browser
-
-    import_pdf(pdf_file, cookie_string)
+    import_pdf(pdf_file)
