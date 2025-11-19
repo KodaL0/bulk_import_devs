@@ -9,10 +9,51 @@ import json
 BASE_URL = "https://propertprodjango.onrender.com/api/dev/v1"
 ORGANIZATION_ID = 2
 SESSION = requests.Session()
+ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNTY0NDUyLCJpYXQiOjE3NjM1NTAwNTIsImp0aSI6IjA3NDAxZjIzOTc5NjQ5MTQ4YTk1NmE2YThkMGQyMWI1IiwidXNlcl9pZCI6MTJ9.NzaPrkoYuiL6r_c77RU4G7wy_DlvG4bVZnC0OLYDVIA"
 
-ACCESS_TOKEN = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYzNDk5MTEwLCJpYXQiOjE3NjM0ODQ3MTAsImp0aSI6IjY0ZWMzMjYyOGIyYTQ0MzY5OWJjZWUyMDBiZWVmYzY5IiwidXNlcl9pZCI6MTJ9.SIhIr-o4uQO-FIxLVoscwehaKav0uQWQyqVgm9QtZw4"
-)
+
+# ===========================================================
+# UTILITIES
+# ===========================================================
+def safe_float(v):
+    """Convert messy PDF strings into float."""
+    if v is None:
+        return None
+    v = str(v).replace(",", "").strip()
+    v = re.sub(r"[^0-9.]", "", v)
+    if v == "":
+        return None
+    try:
+        return float(v)
+    except:
+        return None
+
+
+def detect_status(row_text):
+    row_text = row_text.lower()
+    if "sold" in row_text:
+        return "sold"
+    if "reserv" in row_text:
+        return "reserved"
+    return "available"
+
+
+def extract_price(cell):
+    if cell is None:
+        return None
+    txt = str(cell)
+    # Grab numbers only
+    numbers = re.sub(r"[^0-9]", "", txt)
+    return float(numbers) if numbers else None
+
+
+def is_block_unit(value):
+    return bool(re.match(r"^[A-Z]+[0-9]+$", value))
+
+
+def is_villa_unit(value):
+    return value.isdigit()
+
 
 # ===========================================================
 # API HELPERS
@@ -23,20 +64,16 @@ def api_post(endpoint, data=None):
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Authorization": f"Bearer {ACCESS_TOKEN}"
     }
 
     resp = SESSION.post(url, data=data, headers=headers)
-
     if resp.status_code >= 400:
         print(f"[ERROR] POST {url} → {resp.status_code}: {resp.text}")
 
     return resp
 
 
-# ===========================================================
-# PROJECT CREATION
-# ===========================================================
 def create_project(name):
     payload = {
         "organization": ORGANIZATION_ID,
@@ -60,184 +97,177 @@ def create_project(name):
         pid = r.json()["id"]
         print(f"[PROJECT CREATED] {name} → ID {pid}")
         return pid
-
     print(f"[PROJECT FAILED] {name}")
     return None
 
 
-# ===========================================================
-# UNIT CREATION
-# ===========================================================
 def create_unit(project_id, unit):
-    payload = {
-        "project": project_id,
-        "code": unit["code"],
-        "unit_type": unit["unit_type"],
-        "bedrooms": unit["bedrooms"],
-        "bathrooms": unit["bathrooms"],
-        "area_internal": unit["area_internal"],
-        "area_veranda": unit["area_veranda"],
-        "area_total": unit["area_total"],
-        "price": unit["price"],
-        "currency": "EUR",
-        "vat_included": False,
-        "status": unit["status"],
-        "floor": "",  # ALWAYS EMPTY
-        "plot": unit["plot"],
-        "plot_area": unit["plot_area"],
-        "veranda": unit["veranda"],
-        "veranda_area": unit["veranda_area"],
-        "pool": "none",
-        "pool_area": None,
-        "is_published": False
-    }
-
-    r = api_post("units", json.dumps(payload))
+    r = api_post("units", json.dumps(unit))
     if r.status_code == 201:
         print(f"   → UNIT CREATED: {unit['code']}")
-    else:
-        print(f"   → ERROR creating {unit['code']}: {r.text}")
 
 
 # ===========================================================
-# HELPERS
-# ===========================================================
-def safe_float(v):
-    try:
-        v = v.replace(",", "")
-        return float(v)
-    except:
-        return None
-
-
-# ===========================================================
-# PARSE UNIT ROW
-# ===========================================================
-def parse_unit_row(row, project_name):
-    row = [(x or "").strip() for x in row]
-
-    if len(row) < 2:
-        return None
-
-    unit_raw = row[0]
-
-    # --- Skip header rows ---
-    if unit_raw.lower() == "unit":
-        return None
-
-    # =======================================================
-    # IDENTITY RULE: VILLA OR BLOCK UNIT?
-    # =======================================================
-
-    if unit_raw.isdigit():
-        # Villa
-        code = f"Villa-{unit_raw}"
-        unit_type = "house"
-    else:
-        # Block-type unit (A101, M102, L003, A201 etc.)
-        code = re.sub(r"[^A-Za-z0-9]", "", unit_raw)  # Clean
-        unit_type = "apartment"
-
-    # Ensure proper row padding
-    while len(row) < 11:
-        row.append("")
-
-    bedrooms = safe_float(row[1])
-    plot = safe_float(row[2])
-    bathrooms = safe_float(row[3])
-    internal = safe_float(row[4])
-    veranda = safe_float(row[6])
-    total_area = safe_float(row[8])
-    price_raw = row[10]
-
-    # Determine status
-    status_text = price_raw.lower()
-    if "sold" in status_text:
-        status = "sold"
-        price = None
-    elif "reserv" in status_text:
-        status = "reserved"
-        price = None
-    else:
-        status = "available"
-        price = safe_float(price_raw)
-
-    return {
-        "project_name": project_name,
-        "code": code,
-        "unit_type": unit_type,
-        "bedrooms": int(bedrooms or 0),
-        "bathrooms": int(bathrooms or 1),
-        "area_internal": internal,
-        "area_veranda": veranda,
-        "area_total": total_area,
-        "price": price,
-        "status": status,
-        "plot": "private" if plot else "none",
-        "plot_area": plot,
-        "veranda": "private" if veranda else "none",
-        "veranda_area": veranda,
-    }
-
-
-# ===========================================================
-# PDF PARSER MASTER FUNCTION
+# PARSING LOGIC
 # ===========================================================
 def parse_pdf(pdf_path):
-    all_units = {}
+    all_data = {}
     current_project = None
+    current_block = None
 
     with pdfplumber.open(pdf_path) as pdf:
         for page_number, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
-
-            # PROJECT DETECTION
             first_line = text.split("\n")[0].strip()
-            if len(first_line) > 3 and not re.search(r"[0-9]", first_line):
+
+            # Detect project title
+            if len(first_line) > 3 and not any(char.isdigit() for char in first_line):
                 current_project = first_line
                 print(f"[PROJECT DETECTED] Page {page_number}: {current_project}")
-                all_units.setdefault(current_project, [])
+                all_data[current_project] = []
+                current_block = None
 
-            # EXTRACT TABLES
-            for table in page.extract_tables() or []:
-                if len(table) < 3:
+            tables = page.extract_tables()
+            if not tables:
+                continue
+
+            for table in tables:
+                if len(table) < 2:
                     continue
 
-                # Parse real unit rows (skip header rows)
-                for row in table[2:]:
-                    if not row or not row[0]:
+                header = [h.lower().strip() if h else "" for h in table[0]]
+
+                # Detect column indexes dynamically
+                col = {
+                    "unit": None,
+                    "beds": None,
+                    "baths": None,
+                    "internal": None,
+                    "veranda": None,
+                    "total": None,
+                    "pool": None,
+                    "price": None
+                }
+
+                for i, h in enumerate(header):
+                    if "unit" in h and "blok" in h:
+                        col["unit"] = i
+                    if "bed" in h:
+                        col["beds"] = i
+                    if "bath" in h:
+                        col["baths"] = i
+                    if "internal" in h:
+                        col["internal"] = i
+                    if "veranda" in h:
+                        col["veranda"] = i
+                    if "total" in h:
+                        col["total"] = i
+                    if "pool" in h:
+                        col["pool"] = i
+                    if "price" in h:
+                        col["price"] = i
+
+                # Parse table rows
+                for row in table[1:]:
+                    if not row:
                         continue
 
-                    # Remove "Penthouse" lines
-                    if "penthouse" in row[0].lower():
+                    unit_raw = str(row[col["unit"]] if col["unit"] is not None else "").strip()
+
+                    # Detect block headers line "Block L"
+                    if unit_raw.lower().startswith("block"):
+                        current_block = unit_raw.replace("Block", "").strip()
                         continue
 
-                    unit = parse_unit_row(row, current_project)
-                    if unit:
-                        all_units[current_project].append(unit)
+                    # Skip empty or invalid lines
+                    if not unit_raw:
+                        continue
 
-    return all_units
+                    # Determine unit type: Block or Villa
+                    if is_block_unit(unit_raw):
+                        block_letter = re.match(r"([A-Z]+)", unit_raw).group(1)
+                        number = re.match(r"[A-Z]+([0-9]+)", unit_raw).group(1)
+                        code = f"{block_letter}-{number}".upper()
+
+                    elif is_villa_unit(unit_raw):
+                        code = f"Villa-{unit_raw}"
+                        block_letter = "Villa"
+
+                    else:
+                        continue
+
+                    # Extract values
+                    beds = safe_float(row[col["beds"]]) if col["beds"] is not None else None
+                    baths = safe_float(row[col["baths"]]) if col["baths"] is not None else None
+                    internal = safe_float(row[col["internal"]]) if col["internal"] is not None else None
+                    veranda = safe_float(row[col["veranda"]]) if col["veranda"] is not None else None
+                    total_area = safe_float(row[col["total"]]) if col["total"] is not None else None
+                    pool_raw = row[col["pool"]] if col["pool"] is not None else ""
+                    price_raw = row[col["price"]] if col["price"] is not None else ""
+
+                    row_text = " ".join([str(x) for x in row])
+
+                    status = detect_status(row_text)
+                    price = extract_price(price_raw)
+
+                    pool_raw_lower = str(pool_raw).strip().lower()
+
+                    if "communal" in pool_raw_lower:
+                        pool = "communal"
+                    elif "private" in pool_raw_lower:
+                        pool = "private"
+                    elif "both" in pool_raw_lower:
+                        pool = "both"
+                    else:
+                        pool = "none"
+
+
+                    unit_data = {
+                        "project": None,  # filled later
+                        "code": code,
+                        "unit_type": "apartment" if block_letter != "Villa" else "house",
+                        "bedrooms": int(beds or 0),
+                        "bathrooms": int(baths or 1),
+                        "area_internal": internal,
+                        "area_veranda": veranda,
+                        "area_total": total_area,
+                        "price": price,
+                        "currency": "EUR",
+                        "vat_included": False,
+                        "status": status,
+                        "floor": block_letter,
+                        "plot": "none",
+                        "plot_area": None,
+                        "veranda": "private" if veranda else "none",
+                        "veranda_area": veranda,
+                        "pool": pool,
+                        "pool_area": None,
+                        "is_published": False
+                    }
+
+                    all_data[current_project].append(unit_data)
+
+    return all_data
 
 
 # ===========================================================
-# MAIN PROCESS
+# MAIN IMPORT
 # ===========================================================
 def import_pdf(pdf_path):
-    all_projects = parse_pdf(pdf_path)
+    projects = parse_pdf(pdf_path)
 
     print("\n==============================")
     print("  STARTING IMPORT")
     print("==============================")
 
-    for project_name, units in all_projects.items():
-        print(f"\n--- PROJECT: {project_name} ---")
-        print(f"Units detected: {len(units)}")
-
+    for project_name, units in projects.items():
+        print(f"\n--- PROJECT: {project_name} --- ({len(units)} units found)")
         pid = create_project(project_name)
         if not pid:
             continue
 
         for unit in units:
+            unit["project"] = pid
             create_unit(pid, unit)
 
     print("\n==============================")
@@ -245,9 +275,6 @@ def import_pdf(pdf_path):
     print("==============================\n")
 
 
-# ===========================================================
-# RUN
-# ===========================================================
+# RUN SCRIPT
 if __name__ == "__main__":
-    pdf_file = "FullPricelist_B-1.pdf"
-    import_pdf(pdf_file)
+    import_pdf("FullPricelist_B-1.pdf")
